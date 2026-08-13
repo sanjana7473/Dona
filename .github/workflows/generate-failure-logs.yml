@@ -1,0 +1,251 @@
+name: Generate Realistic CI/CD Failure Logs
+
+on:
+  workflow_dispatch:
+    inputs:
+      category:
+        description: Failure category to generate
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - dependency_error
+          - docker_failure
+          - test_failure
+          - iac_misconfiguration
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  failure-scenarios:
+    name: ${{ matrix.scenario.id }}
+    runs-on: ubuntu-latest
+    if: inputs.category == 'all' || inputs.category == '' || matrix.scenario.category == inputs.category
+    continue-on-error: true
+
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - id: DEP-GHA-001
+            category: dependency_error
+            description: pip dependency resolution conflict
+            expected_root_cause: requests 2.31.0 conflicts with the pinned urllib3 1.20 version
+            remediation_keywords: [requests, urllib3, requirements.txt, pin]
+          - id: DEP-GHA-002
+            category: dependency_error
+            description: missing Python package
+            expected_root_cause: The imported package is not installed in the CI environment
+            remediation_keywords: [requirements.txt, install, dependency]
+          - id: DOC-GHA-001
+            category: docker_failure
+            description: unavailable Docker image tag
+            expected_root_cause: The Docker base image tag does not exist in the registry
+            remediation_keywords: [Dockerfile, FROM, tag, image]
+          - id: DOC-GHA-002
+            category: docker_failure
+            description: Dockerfile syntax error
+            expected_root_cause: The Dockerfile contains an invalid continuation instruction
+            remediation_keywords: [Dockerfile, RUN, syntax, continuation]
+          - id: TST-GHA-001
+            category: test_failure
+            description: assertion regression
+            expected_root_cause: The test assertion compares different expected and actual values
+            remediation_keywords: [assert, expected, actual, test]
+          - id: TST-GHA-002
+            category: test_failure
+            description: missing CI environment variable
+            expected_root_cause: The required CI_REQUIRED_API_KEY environment variable is missing
+            remediation_keywords: [CI_REQUIRED_API_KEY, environment, secret, env]
+          - id: IAC-GHA-001
+            category: iac_misconfiguration
+            description: invalid Terraform HCL
+            expected_root_cause: The Terraform resource contains an incomplete attribute assignment
+            remediation_keywords: [terraform, validate, HCL, main.tf]
+          - id: IAC-GHA-002
+            category: iac_misconfiguration
+            description: invalid Kubernetes manifest field
+            expected_root_cause: pullSecrets is placed inside a container instead of the pod specification
+            remediation_keywords: [pullSecrets, manifest, kubectl, validate]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Terraform for Terraform scenario
+        if: matrix.scenario.id == 'IAC-GHA-001'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Execute intentional failure and capture runner log
+        id: generate-log
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          scenario_id="${{ matrix.scenario.id }}"
+          log_file="failure-${scenario_id}.log"
+          status=0
+
+          case "$scenario_id" in
+            DEP-GHA-001)
+              cat > failure-requirements.txt <<'EOF'
+          requests==2.31.0
+          urllib3==1.20
+          EOF
+              set +e
+              python -m pip install --disable-pip-version-check -r failure-requirements.txt 2>&1 | tee "$log_file"
+              status=${PIPESTATUS[0]}
+              set -e
+              ;;
+
+            DEP-GHA-002)
+              set +e
+              python -c "import package_that_does_not_exist" 2>&1 | tee "$log_file"
+              status=${PIPESTATUS[0]}
+              set -e
+              ;;
+
+            DOC-GHA-001)
+              cat > Dockerfile <<'EOF'
+          FROM node:18.99.0-alpine
+          RUN node --version
+          EOF
+              set +e
+              docker build --tag synthetic-ci-failure . 2>&1 | tee "$log_file"
+              status=${PIPESTATUS[0]}
+              set -e
+              ;;
+
+            DOC-GHA-002)
+              cat > Dockerfile <<'EOF'
+          FROM python:3.11-slim
+          RUN python --version
+          && echo "broken Dockerfile continuation"
+          EOF
+              set +e
+              docker build --tag synthetic-ci-failure . 2>&1 | tee "$log_file"
+              status=${PIPESTATUS[0]}
+              set -e
+              ;;
+
+            TST-GHA-001)
+              cat > failing_test.py <<'PY'
+          def test_expected_value():
+              actual = 404
+              expected = 201
+              assert actual == expected, f"expected {expected}, got {actual}"
+
+          test_expected_value()
+          PY
+              set +e
+              python failing_test.py 2>&1 | tee "$log_file"
+              status=${PIPESTATUS[0]}
+              set -e
+              ;;
+
+            TST-GHA-002)
+              cat > environment_test.py <<'PY'
+          import os
+
+          api_key = os.environ["CI_REQUIRED_API_KEY"]
+          print(f"Loaded key: {api_key[:3]}...")
+          PY
+              set +e
+              python environment_test.py 2>&1 | tee "$log_file"
+              status=${PIPESTATUS[0]}
+              set -e
+              ;;
+
+            IAC-GHA-001)
+              cat > main.tf <<'EOF'
+          terraform {
+            required_version = ">= 1.0"
+          }
+
+          resource "null_resource" "broken" {
+            triggers = {
+              invalid_value =
+            }
+          }
+          EOF
+              set +e
+              terraform validate 2>&1 | tee "$log_file"
+              status=${PIPESTATUS[0]}
+              set -e
+              ;;
+
+            IAC-GHA-002)
+              cat > deployment.yaml <<'EOF'
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: synthetic-invalid-deployment
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: synthetic-invalid
+            template:
+              metadata:
+                labels:
+                  app: synthetic-invalid
+              spec:
+                containers:
+                  - name: app
+                    image: nginx:latest
+                    pullSecrets:
+                      - name: invalid-location
+          EOF
+              set +e
+              kubectl apply --dry-run=client --validate=strict -f deployment.yaml 2>&1 | tee "$log_file"
+              status=${PIPESTATUS[0]}
+              set -e
+              ;;
+          esac
+
+          {
+            echo
+            echo "Scenario ID: $scenario_id"
+            echo "Category: ${{ matrix.scenario.category }}"
+            echo "Description: ${{ matrix.scenario.description }}"
+            echo "Synthetic scenario exit code: $status"
+          } >> "$log_file"
+
+          echo "Generated $log_file with exit code $status"
+          exit "$status"
+
+      - name: Write ground-truth metadata
+        if: always()
+        shell: bash
+        run: |
+          cat > ground_truth.json <<'EOF'
+          {
+            "scenario_id": "${{ matrix.scenario.id }}",
+            "category": "${{ matrix.scenario.category }}",
+            "description": "${{ matrix.scenario.description }}",
+            "expected_root_cause": "${{ matrix.scenario.expected_root_cause }}",
+            "remediation_keywords": ${{ toJSON(matrix.scenario.remediation_keywords) }},
+            "source": "github_actions_synthetic"
+          }
+          EOF
+
+      - name: Upload generated failure log and ground truth
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-log-${{ matrix.scenario.id }}
+          path: |
+            failure-${{ matrix.scenario.id }}.log
+            ground_truth.json
+          if-no-files-found: error
+          retention-days: 7
