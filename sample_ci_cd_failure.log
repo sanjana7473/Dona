@@ -1,0 +1,20 @@
+Run python -m pip install -r requirements.txt
+  python -m pip install -r requirements.txt
+
+Collecting requests==2.31.0
+  Downloading requests-2.31.0-py3-none-any.whl
+Collecting urllib3==3.0.0
+  Downloading urllib3-3.0.0-py3-none-any.whl
+
+ERROR: Cannot install requests==2.31.0 and urllib3==3.0.0 because these package versions have conflicting dependencies.
+
+The conflict is caused by:
+    The user requested urllib3==3.0.0
+    requests 2.31.0 depends on urllib3<3 and >=1.21.1
+
+Additionally, some packages in the requirements file are incompatible with the selected Python version.
+
+ERROR: ResolutionImpossible: for help visit https://pip.pypa.io/en/latest/topics/dependency-resolution/
+
+##[error]Process completed with exit code 1.
+Error: Process completed with exit code 1.

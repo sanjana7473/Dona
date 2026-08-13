@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CI/CD Failure Diagnosis</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        :root { --page-bg: #f3f6fb; --border: #dfe6f1; }
+        body { background: var(--page-bg); color: #1e293b; }
+        .hero { background: linear-gradient(135deg, #182848, #304b75); color: white; }
+        .section-card { border: 0; border-top: 4px solid transparent; box-shadow: 0 8px 25px rgba(30, 41, 59, .08); }
+        .section-upload { border-top-color: #0d6efd; }
+        .section-local { border-top-color: #198754; }
+        .section-github { border-top-color: #212529; }
+        .results-panel { background: #f8fafc; border: 1px solid var(--border); border-radius: .75rem; min-height: 90px; }
+        .results-panel.empty { display: grid; place-items: center; color: #64748b; }
+        .diagnosis-card { background: white; border: 1px solid var(--border); border-radius: .75rem; box-shadow: 0 3px 12px rgba(15, 23, 42, .06); }
+        .diagnosis-card + .diagnosis-card { margin-top: 1rem; }
+        .diagnosis-card .log-preview { max-height: 180px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: .8rem; }
+        .diagnosis-card .fix { white-space: pre-wrap; }
+        .feed { max-height: 850px; overflow-y: auto; padding: .25rem; }
+        .progress { height: .6rem; }
+        .status-text { min-height: 1.5rem; }
+        .metric-label { color: #64748b; font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+        .verification-box { border-left: 4px solid #0d6efd; background: #f8fbff; }
+        .verification-box .alert { margin-bottom: .75rem; }
+        .small-muted { color: #64748b; font-size: .86rem; }
+    </style>
+</head>
+<body>
+    <header class="hero py-4 mb-4">
+        <div class="container">
+            <h1 class="h2 mb-1">CI/CD Failure Diagnosis</h1>
+            <p class="mb-0 opacity-75">Generate, analyze, and independently verify pipeline failure diagnoses.</p>
+        </div>
+    </header>
+
+    <main class="container pb-5">
+        <div id="globalMessage" class="alert d-none" role="alert"></div>
+
+        <div class="row g-4 align-items-start">
+            <!-- Section 1: manual upload -->
+            <div class="col-xl-4">
+                <section class="card section-card section-upload h-100">
+                    <div class="card-body p-4">
+                        <div class="d-flex justify-content-between align-items-start mb-2">
+                            <div>
+                                <span class="badge text-bg-primary mb-2">SECTION 1</span>
+                                <h2 class="h5 mb-1">Upload a failure log</h2>
+                            </div>
+                            <span class="fs-3">📄</span>
+                        </div>
+                        <p class="small-muted mb-3">Paste an existing log or select a text file for analysis.</p>
+                        <input id="logFile" type="file" class="form-control mb-2" accept=".log,.txt,text/plain">
+                        <textarea id="logInput" class="form-control mb-3" rows="9" placeholder="Paste a CI/CD failure log..."></textarea>
+                        <button id="diagnoseBtn" class="btn btn-primary w-100">Analyze uploaded log</button>
+                        <div id="manualStatus" class="status-text small-muted mt-3"></div>
+                        <div id="manualResults" class="results-panel empty mt-2 p-3">Your diagnosis will appear here.</div>
+                    </div>
+                </section>
+            </div>
+
+            <!-- Section 2: local sequential generation -->
+            <div class="col-xl-4">
+                <section class="card section-card section-local">
+                    <div class="card-body p-4">
+                        <div class="d-flex justify-content-between align-items-start mb-2">
+                            <div>
+                                <span class="badge text-bg-success mb-2">SECTION 2</span>
+                                <h2 class="h5 mb-1">Generate logs locally</h2>
+                            </div>
+                            <span class="fs-3">⚙️</span>
+                        </div>
+                        <p class="small-muted mb-3">Generate a bounded batch of synthetic logs one after another.</p>
+                        <div class="row g-2 mb-2">
+                            <div class="col-7">
+                                <label for="localCategory" class="form-label small">Failure category</label>
+                                <select id="localCategory" class="form-select">
+                                    <option value="random">Random</option>
+                                    <option value="dependency_error">Dependency</option>
+                                    <option value="docker_failure">Docker</option>
+                                    <option value="test_failure">Test</option>
+                                    <option value="iac_misconfiguration">IaC</option>
+                                </select>
+                            </div>
+                            <div class="col-5">
+                                <label for="localCount" class="form-label small">Number of logs</label>
+                                <input id="localCount" type="number" class="form-control" min="1" max="20" value="5">
+                            </div>
+                        </div>
+                        <div class="row g-2 mb-2">
+                            <div class="col-6">
+                                <label for="localInterval" class="form-label small">Interval (seconds)</label>
+                                <input id="localInterval" type="number" class="form-control" min="0" max="30" step="0.5" value="2">
+                            </div>
+                            <div class="col-6">
+                                <label for="localSeed" class="form-label small">Starting seed</label>
+                                <input id="localSeed" type="number" class="form-control" placeholder="Optional">
+                            </div>
+                        </div>
+                        <div class="form-check mb-3">
+                            <input id="useAiVariation" class="form-check-input" type="checkbox">
+                            <label class="form-check-label small" for="useAiVariation">Use optional AI wording variation</label>
+                        </div>
+                        <div class="d-flex gap-2">
+                            <button id="localGenerateBtn" class="btn btn-success flex-grow-1">Start generating</button>
+                            <button id="localStopBtn" class="btn btn-outline-danger" disabled>Stop</button>
+                        </div>
+                        <div class="d-flex justify-content-between small-muted mt-3">
+                            <span id="localStatus">Ready to generate.</span>
+                            <span id="localProgressLabel"></span>
+                        </div>
+                        <div class="progress mt-1" role="progressbar" aria-label="Local generation progress">
+                            <div id="localProgress" class="progress-bar bg-success" style="width: 0%"></div>
+                        </div>
+                        <div id="localResults" class="results-panel empty feed mt-3 p-3">Generated diagnoses will appear here.</div>
+                    </div>
+                </section>
+            </div>
+
+            <!-- Section 3: GitHub Actions generation -->
+            <div class="col-xl-4">
+                <section class="card section-card section-github">
+                    <div class="card-body p-4">
+                        <div class="d-flex justify-content-between align-items-start mb-2">
+                            <div>
+                                <span class="badge text-bg-dark mb-2">SECTION 3</span>
+                                <h2 class="h5 mb-1">Generate with GitHub Actions</h2>
+                            </div>
+                            <span class="fs-3">🐙</span>
+                        </div>
+                        <p class="small-muted mb-3">Run a controlled failure on a GitHub-hosted runner and fetch its artifact.</p>
+                        <label for="githubCategory" class="form-label small">Failure category</label>
+                        <select id="githubCategory" class="form-select mb-2">
+                            <option value="dependency_error">Dependency</option>
+                            <option value="docker_failure">Docker</option>
+                            <option value="test_failure">Test</option>
+                            <option value="iac_misconfiguration">IaC</option>
+                        </select>
+                        <label for="githubRef" class="form-label small">Git ref</label>
+                        <input id="githubRef" class="form-control mb-3" value="main">
+                        <div id="githubStatus" class="status-text small-muted">No GitHub job started.</div>
+                        <button id="githubGenerateBtn" class="btn btn-dark w-100">Generate GitHub log</button>
+                        <div id="githubResults" class="results-panel empty mt-3 p-3">The fetched log and diagnosis will appear here.</div>
+                    </div>
+                </section>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        const $ = (id) => document.getElementById(id);
+        let localBatchRunning = false;
+        let localAbortController = null;
+
+        function showMessage(message, type = "danger") {
+            const element = $("globalMessage");
+            element.textContent = message;
+            element.className = `alert alert-${type}`;
+        }
+
+        function clearMessage() {
+            $("globalMessage").className = "alert d-none";
+            $("globalMessage").textContent = "";
+        }
+
+        function setPanelEmpty(panel, message) {
+            panel.className = "results-panel empty mt-3 p-3";
+            panel.textContent = message;
+        }
+
+        function addField(parent, label, value, className = "") {
+            const wrapper = document.createElement("div");
+            wrapper.className = className;
+            const labelElement = document.createElement("div");
+            labelElement.className = "metric-label mb-1";
+            labelElement.textContent = label;
+            const valueElement = document.createElement("div");
+            valueElement.textContent = value || "Not provided";
+            wrapper.append(labelElement, valueElement);
+            parent.appendChild(wrapper);
+        }
+
+        function renderVerification(result, container) {
+            const box = document.createElement("div");
+            box.className = "verification-box rounded p-3 mt-3";
+            const verdict = document.createElement("div");
+            verdict.className = `alert ${result.is_correct ? "alert-success" : "alert-warning"}`;
+            verdict.textContent = result.is_correct
+                ? "The diagnosis appears to be correct."
+                : "The diagnosis needs review.";
+            box.appendChild(verdict);
+
+            const confidence = document.createElement("p");
+            confidence.className = "mb-2";
+            confidence.innerHTML = "<strong>Confidence:</strong> ";
+            const confidenceValue = document.createElement("span");
+            confidenceValue.textContent = `${Math.round(Number(result.confidence_score || 0) * 100)}%`;
+            confidence.appendChild(confidenceValue);
+            box.appendChild(confidence);
+
+            const explanation = document.createElement("p");
+            explanation.className = "mb-2";
+            explanation.innerHTML = "<strong>Explanation:</strong> ";
+            const explanationValue = document.createElement("span");
+            explanationValue.textContent = result.explanation || "No explanation was provided.";
+            explanation.appendChild(explanationValue);
+            box.appendChild(explanation);
+
+            const evidence = Array.isArray(result.evidence) ? result.evidence : [];
+            if (evidence.length) {
+                const evidenceTitle = document.createElement("strong");
+                evidenceTitle.textContent = "Evidence from the log:";
+                box.appendChild(evidenceTitle);
+                const list = document.createElement("ul");
+                list.className = "mb-0 mt-1";
+                evidence.forEach((item) => {
+                    const listItem = document.createElement("li");
+                    listItem.textContent = item;
+                    list.appendChild(listItem);
+                });
+                box.appendChild(list);
+            }
+
+            const corrections = [];
+            if (result.corrected_failure_category) corrections.push(`Failure category: ${result.corrected_failure_category}`);
+            if (result.corrected_root_cause) corrections.push(`Root cause: ${result.corrected_root_cause}`);
+            if (result.corrected_recommended_fix) corrections.push(`Recommended fix: ${result.corrected_recommended_fix}`);
+            if (corrections.length) {
+                const correction = document.createElement("div");
+                correction.className = "alert alert-warning mt-3 mb-0";
+                correction.textContent = `Suggested correction:\n${corrections.join("\n")}`;
+                box.appendChild(correction);
+            }
+            container.appendChild(box);
+        }
+
+        async function verifyDiagnosis(log, diagnosis, button, card) {
+            button.disabled = true;
+            button.textContent = "Verifying...";
+            try {
+                const result = await requestJson("/api/verify", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ log, diagnosis })
+                });
+                button.textContent = result.is_correct ? "Verified correct" : "Needs review";
+                button.className = result.is_correct ? "btn btn-success btn-sm" : "btn btn-warning btn-sm";
+                renderVerification(result, card);
+            } catch (error) {
+                showMessage(error.message);
+                button.disabled = false;
+                button.textContent = "Verify with AI";
+            }
+        }
+
+        function renderDiagnosisCard(payload, source, sequenceNumber = null) {
+            const diagnosis = payload.diagnosis || payload;
+            const card = document.createElement("article");
+            card.className = "diagnosis-card p-3";
+
+            const header = document.createElement("div");
+            header.className = "d-flex justify-content-between align-items-start mb-3";
+            const title = document.createElement("div");
+            const heading = document.createElement("h3");
+            heading.className = "h6 mb-1";
+            heading.textContent = sequenceNumber ? `Generated log ${sequenceNumber}` : "Diagnosis";
+            const sourceText = document.createElement("div");
+            sourceText.className = "small-muted";
+            sourceText.textContent = source;
+            title.append(heading, sourceText);
+            const category = document.createElement("span");
+            category.className = "badge text-bg-primary";
+            category.textContent = diagnosis.failure_category || "unknown";
+            header.append(title, category);
+            card.appendChild(header);
+
+            const grid = document.createElement("div");
+            grid.className = "row g-3 mb-3";
+            const rootCause = document.createElement("div");
+            rootCause.className = "col-12";
+            addField(rootCause, "Root cause", diagnosis.root_cause);
+            const confidence = document.createElement("div");
+            confidence.className = "col-5";
+            addField(confidence, "Confidence", `${Math.round(Number(diagnosis.confidence_score || 0) * 100)}%`);
+            const mode = document.createElement("div");
+            mode.className = "col-7";
+            addField(mode, "Diagnosis mode", diagnosis.diagnosis_mode || "AI");
+            grid.append(rootCause, confidence, mode);
+            card.appendChild(grid);
+
+            const fix = document.createElement("div");
+            fix.className = "border rounded p-2 mb-3 fix";
+            addField(fix, "Recommended fix", diagnosis.recommended_fix);
+            card.appendChild(fix);
+
+            if (payload.log) {
+                const details = document.createElement("details");
+                const summary = document.createElement("summary");
+                summary.className = "small text-primary mb-2";
+                summary.textContent = "Show generated log";
+                const log = document.createElement("pre");
+                log.className = "log-preview bg-light border rounded p-2 mb-0";
+                log.textContent = payload.log;
+                details.append(summary, log);
+                card.appendChild(details);
+            }
+
+            const actions = document.createElement("div");
+            actions.className = "d-flex justify-content-between align-items-center mt-3";
+            const references = document.createElement("span");
+            references.className = "small-muted";
+            const referenceCount = Array.isArray(diagnosis.retrieved_references) ? diagnosis.retrieved_references.length : 0;
+            references.textContent = `${referenceCount} supporting reference${referenceCount === 1 ? "" : "s"}`;
+            const verifyButton = document.createElement("button");
+            verifyButton.className = "btn btn-outline-primary btn-sm";
+            verifyButton.textContent = "Verify with AI";
+            verifyButton.disabled = !payload.log;
+            verifyButton.addEventListener("click", () => verifyDiagnosis(payload.log, diagnosis, verifyButton, card));
+            actions.append(references, verifyButton);
+            card.appendChild(actions);
+            return card;
+        }
+
+        async function requestJson(url, options = {}) {
+            const response = await fetch(url, options);
+            const payload = await response.json().catch(() => ({ error: "Invalid server response" }));
+            if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
+            return payload;
+        }
+
+        function sleep(milliseconds) {
+            return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+        }
+
+        $("logFile").addEventListener("change", async (event) => {
+            const file = event.target.files[0];
+            if (file) $("logInput").value = await file.text();
+        });
+
+        $("diagnoseBtn").addEventListener("click", async () => {
+            const log = $("logInput").value.trim();
+            if (!log) return showMessage("Please paste or select a failure log.", "warning");
+            const button = $("diagnoseBtn");
+            button.disabled = true;
+            button.textContent = "Analyzing...";
+            $("manualStatus").textContent = "Sending log to the diagnosis agent...";
+            try {
+                const diagnosis = await requestJson("/api/diagnose", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ log })
+                });
+                const panel = $("manualResults");
+                panel.className = "results-panel mt-3 p-3";
+                panel.replaceChildren(renderDiagnosisCard({ log, diagnosis }, "manual upload"));
+                $("manualStatus").textContent = "Diagnosis completed.";
+            } catch (error) {
+                showMessage(error.message);
+                $("manualStatus").textContent = "Diagnosis failed.";
+            } finally {
+                button.disabled = false;
+                button.textContent = "Analyze uploaded log";
+            }
+        });
+
+        $("localGenerateBtn").addEventListener("click", async () => {
+            if (localBatchRunning) return;
+            const count = Math.min(20, Math.max(1, Number($("localCount").value) || 1));
+            const interval = Math.min(30, Math.max(0, Number($("localInterval").value) || 0)) * 1000;
+            const seedText = $("localSeed").value.trim();
+            const baseSeed = seedText === "" ? null : Number(seedText);
+            const results = $("localResults");
+            results.className = "results-panel feed mt-3 p-3";
+            results.replaceChildren();
+            localBatchRunning = true;
+            localAbortController = new AbortController();
+            $("localGenerateBtn").disabled = true;
+            $("localStopBtn").disabled = false;
+            clearMessage();
+
+            for (let index = 0; index < count; index += 1) {
+                if (!localBatchRunning) break;
+                $("localStatus").textContent = `Generating log ${index + 1} of ${count}...`;
+                $("localProgressLabel").textContent = `${index}/${count} completed`;
+                $("localProgress").style.width = `${Math.round((index / count) * 100)}%`;
+                try {
+                    const body = {
+                        category: $("localCategory").value,
+                        use_ai_variation: $("useAiVariation").checked
+                    };
+                    if (baseSeed !== null && Number.isFinite(baseSeed)) body.seed = baseSeed + index;
+                    const payload = await requestJson("/api/generate/local", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(body),
+                        signal: localAbortController.signal
+                    });
+                    results.appendChild(renderDiagnosisCard(payload, "local generated", index + 1));
+                    results.scrollTop = results.scrollHeight;
+                } catch (error) {
+                    if (localBatchRunning) showMessage(error.message);
+                    break;
+                }
+                if (index < count - 1 && localBatchRunning) await sleep(interval);
+            }
+
+            const completed = results.querySelectorAll(".diagnosis-card").length;
+            $("localProgress").style.width = `${Math.round((completed / count) * 100)}%`;
+            $("localProgressLabel").textContent = `${completed}/${count} completed`;
+            $("localStatus").textContent = localBatchRunning
+                ? `Batch complete: ${completed} log${completed === 1 ? "" : "s"} generated.`
+                : `Generation stopped after ${completed} log${completed === 1 ? "" : "s"}.`;
+            localBatchRunning = false;
+            localAbortController = null;
+            $("localGenerateBtn").disabled = false;
+            $("localStopBtn").disabled = true;
+        });
+
+        $("localStopBtn").addEventListener("click", () => {
+            localBatchRunning = false;
+            if (localAbortController) localAbortController.abort();
+            $("localStatus").textContent = "Stopping after the current request...";
+        });
+
+        async function pollGithubJob(jobId) {
+            try {
+                const payload = await requestJson(`/api/github/generate/${encodeURIComponent(jobId)}`);
+                $("githubStatus").textContent = `Status: ${payload.status}`;
+                if (["completed", "failed", "dispatch_failed"].includes(payload.status)) {
+                    const panel = $("githubResults");
+                    if (payload.status === "completed") {
+                        panel.className = "results-panel mt-3 p-3";
+                        panel.replaceChildren(renderDiagnosisCard(payload, "GitHub Actions"));
+                    } else {
+                        panel.className = "results-panel mt-3 p-3";
+                        panel.textContent = payload.error || "GitHub generation failed.";
+                    }
+                    $("githubGenerateBtn").disabled = false;
+                    $("githubGenerateBtn").textContent = "Generate GitHub log";
+                    return;
+                }
+                window.setTimeout(() => pollGithubJob(jobId), 3000);
+            } catch (error) {
+                showMessage(error.message);
+                $("githubGenerateBtn").disabled = false;
+                $("githubGenerateBtn").textContent = "Generate GitHub log";
+            }
+        }
+
+        $("githubGenerateBtn").addEventListener("click", async () => {
+            const button = $("githubGenerateBtn");
+            button.disabled = true;
+            button.textContent = "Starting GitHub job...";
+            $("githubStatus").textContent = "Dispatching workflow...";
+            setPanelEmpty($("githubResults"), "Waiting for GitHub Actions...");
+            clearMessage();
+            try {
+                const payload = await requestJson("/api/github/generate", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        category: $("githubCategory").value,
+                        ref: $("githubRef").value.trim() || "main"
+                    })
+                });
+                $("githubStatus").textContent = `Status: ${payload.status}`;
+                if (payload.job_id) pollGithubJob(payload.job_id);
+                else throw new Error("GitHub did not return a job ID");
+            } catch (error) {
+                showMessage(error.message);
+                button.disabled = false;
+                button.textContent = "Generate GitHub log";
+            }
+        });
+    </script>
+</body>
+</html>
