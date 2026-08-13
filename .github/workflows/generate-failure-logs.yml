@@ -21,9 +21,8 @@ permissions:
 
 jobs:
   failure-scenarios:
-    name: ${{ matrix.scenario.id }}
+    name: Generate synthetic failure scenario
     runs-on: ubuntu-latest
-    if: inputs.category == 'all' || inputs.category == '' || matrix.scenario.category == inputs.category
     continue-on-error: true
 
     strategy:
@@ -81,7 +80,6 @@ jobs:
           python-version: "3.11"
 
       - name: Set up Terraform for Terraform scenario
-        if: matrix.scenario.id == 'IAC-GHA-001'
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.9.8"
